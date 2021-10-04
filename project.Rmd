@@ -1,0 +1,153 @@
+```{r setup, warning = FALSE, message = FALSE, fig.width = 15}
+library(caret)
+library(ggplot2)
+library(dplyr)
+library(reshape)
+library(Hmisc)
+library(AppliedPredictiveModeling)
+library(rattle)
+```
+# Overview
+The data used in this project is the  Weight Lifting Exercise Dataset from Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises, in Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) Stuttgart, Germany: ACM SIGCHI, 2013. This paper is viewable online at http://web.archive.org/web/20161224072740/http:/groupware.les.inf.puc-rio.br/har
+
+The data comprise measurements from accelerometers on the belt, forearm, arm, and dumbell of 6 users performing barbell lifts correctly and incorrectly in 5 different ways, coded as "A" to "E" in the data. This project seeks to build a classifier that can predict the manner in which the activity was carried out.
+
+# Data
+The original data are available for download at the following url:
+https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+To reproduce this report please first download the above into a directory named "data".
+
+```{r}
+data <- read.csv("data/training.csv", stringsAsFactors = FALSE)
+```
+
+We first exclude irrelevant rows and columns from the data, remove variables that have one or very few unique values, and then partition the cleaned data into a training, test and validation sets.
+```{r}
+# remove columns without predictive value
+drop_columns <- c("X",
+                  "user_name",
+                  "raw_timestamp_part_1",
+                  "raw_timestamp_part_2",
+                  "cvtd_timestamp",
+                  "new_window",
+                  "num_window")
+
+data_cleaned <- data %>%
+  filter(new_window == "no") %>%
+  select(-starts_with("avg")) %>%
+  select(-starts_with("var")) %>%
+  select(-starts_with("stddev")) %>%
+  select(-one_of(drop_columns))
+
+# remove variables with zero or near zero variance from the set of predictors
+data_cleaned_predictors <- data_cleaned %>%
+  select(-matches("classe"))
+
+data_cleaned_predictors <- data.frame(lapply(data_cleaned_predictors, as.numeric))
+nz <- nearZeroVar(data_cleaned_predictors)
+data_cleaned_predictors <- data_cleaned_predictors[, -nz]
+
+# re-combine predictors and results
+data_cleaned <- cbind(data_cleaned_predictors, classe = data_cleaned$classe)
+
+# partition data into train, test and validation sets
+inTrain <- createDataPartition(data_cleaned$classe, p = 3 / 4)[[1]]
+training <- data_cleaned[inTrain,]
+remainder <- data_cleaned[-inTrain,]
+
+inTest <- createDataPartition(remainder$classe, p = 1 / 2)[[1]]
+testing <- remainder[inTest,]
+validation <- remainder[-inTest,]
+```
+
+There are a lot of predictors so to visualise them we group by placement of the accelerometer
+
+```{r}
+training_belt <- training %>% select(matches("belt|classe"))
+training_arm <- training %>% select(matches("arm|classe"))
+training_dumbbell <- training %>% select(matches("dumbbell|classe"))
+training_forearm <- training %>% select(matches("forearm|classe"))
+```
+```{r}
+training_belt %>%
+  melt(id = "classe") %>%
+  ggplot(aes(classe, value, fill = classe)) +
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot() +
+  ggtitle("Belt")
+```
+```{r}
+training_arm %>%
+  melt(id = "classe") %>%
+  ggplot(aes(classe, value, fill = classe)) +
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot() +
+  ggtitle("Arm")
+```
+```{r}
+training_dumbbell %>%
+  melt(id = "classe") %>%
+  ggplot(aes(classe, value, fill = classe)) +
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot() +
+  ggtitle("Dumbbell")
+```
+```{r}
+training_forearm %>%
+  melt(id = "classe") %>%
+  ggplot(aes(classe, value, fill = classe)) +
+  facet_wrap(~variable, scales = "free") +
+  geom_boxplot() +
+  ggtitle("Forearm")
+```
+
+We note that quite a few of these metrics are skewed, so we might want to preprocess the data by centering and scaling.
+
+# Model selection
+
+We train three candidate models using decision tree, bagged decision tree, and linear discriminant analysis methods, respectively.
+
+```{r}
+modelFitRPart <- train(classe ~ .,
+                       method = "rpart",
+                       data = training,
+                       preProcess = c("center", "scale"))
+
+modelFitBag <- train(classe ~ .,
+                     method = "treebag",
+                     data = training,
+                     preProcess = c("center", "scale"))
+
+modelFitLda <- train(classe ~ .,
+                     method = "lda",
+                     data = training,
+                     preProcess = c("center", "scale"))
+
+```
+
+To choose between the models we use the testing set:
+
+```{r}
+predictedRPart <- predict(modelFitRPart, testing)
+confusionMatrix(testing$classe, predictedRPart)
+
+predictedLda <- predict(modelFitLda, testing)
+confusionMatrix(testing$classe, predictedLda)
+
+predictedBag <- predict(modelFitBag, testing)
+confusionMatrix(testing$classe, predictedBag)
+```
+
+We pick the bagged model as the clear winner in terms of accuracy.
+
+# Out of sample error
+
+To estimate out of sample error we use the validation set:
+
+```{r}
+predicted <- predict(modelFitBag, validation)
+cm <- confusionMatrix(validation$classe, predicted)
+```
+
+The estimated accuracy is `r cm$overall[1]`
